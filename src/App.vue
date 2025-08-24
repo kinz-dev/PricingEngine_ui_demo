@@ -49,7 +49,7 @@ const config = reactive({
   midPrice: 100.0,
   spreadTicks: 2,
   qtyScale: 1.0,
-  maxLevels: 12,
+  maxLevels: 20,
   riskLimits: {
     maxNotional: 250000,
     maxOrderQty: 50,
@@ -57,37 +57,185 @@ const config = reactive({
   },
 });
 
-const rnd = seededRandom(1234567);
-const book = reactive(genInitialBook(config.midPrice, config.maxLevels, 424242));
+const wsUrl = ref('ws://localhost:48000/api/v7');
 
-function regenerateBook() {
-  const levels = Math.max(1, Math.min(100, Math.floor(config.maxLevels || 1)));
-  const { bids, asks } = genInitialBook(config.midPrice, levels, 424242);
-  // Replace array contents to preserve reactivity references
-  book.bids.splice(0, book.bids.length, ...bids);
-  book.asks.splice(0, book.asks.length, ...asks);
-}
-
-watch(() => config.maxLevels, () => {
-  regenerateBook();
+// WebSocket connection state
+const ws = ref(null);
+const wsStatus = ref('disconnected'); // 'connecting' | 'connected' | 'disconnected' | 'error'
+const wsStatusDisplay = computed(() => {
+  switch (wsStatus.value) {
+    case 'connected': return 'Connected';
+    case 'connecting': return 'Connecting';
+    case 'error': return 'Error';
+    default: return 'Disconnected';
+  }
 });
 
+// subscription payload and helpers
+const SUBSCRIBE_PAYLOAD = {
+  op: 'subscribe',
+  params: { topics: ['pe_orderbook.9999.BTCUSDT-PE-OB.100ms'] },
+  reqId: 'sub-1',
+};
+
+function sendSubscribe(socket = ws.value) {
+  if (!socket || socket.readyState !== 1 /* OPEN */) return;
+  try {
+    socket.send(JSON.stringify(SUBSCRIBE_PAYLOAD));
+    console.log('[WS] sent subscribe:', SUBSCRIBE_PAYLOAD);
+  } catch (e) {
+    console.error('[WS] failed to send subscribe:', e);
+  }
+}
+
+let wsSubIntervalId = null;
+
+function cleanupWs() {
+  try {
+    if (wsSubIntervalId) {
+      clearInterval(wsSubIntervalId);
+      wsSubIntervalId = null;
+    }
+    if (ws.value) {
+      ws.value.onopen = null;
+      ws.value.onmessage = null;
+      ws.value.onclose = null;
+      ws.value.onerror = null;
+      ws.value.close();
+    }
+  } catch (e) {
+    // swallow
+  } finally {
+    ws.value = null;
+  }
+}
+
+function connectWs() {
+  cleanupWs();
+  if (!wsUrl.value) {
+    wsStatus.value = 'disconnected';
+    return;
+  }
+  try {
+    wsStatus.value = 'connecting';
+    const socket = new WebSocket(wsUrl.value);
+    ws.value = socket;
+
+    socket.onopen = () => {
+      wsStatus.value = 'connected';
+      // send initial subscribe and start periodic resubscribe
+      sendSubscribe(socket);
+      if (wsSubIntervalId) clearInterval(wsSubIntervalId);
+      wsSubIntervalId = setInterval(() => {
+        if (wsStatus.value === 'connected') sendSubscribe(socket);
+      }, 15000);
+    };
+
+    socket.onmessage = (event) => {
+      try {
+        const msg = JSON.parse(event.data);
+        if (msg && (msg.event === 'pe_orderbook' || (msg.topic && String(msg.topic).startsWith('pe_orderbook')))) {
+          if (msg.data) {
+            applyOrderBookMessage(msg.data);
+          }
+        }
+      } catch (e) {
+        // ignore non-JSON messages
+      }
+    };
+
+    socket.onclose = (ev) => {
+      wsStatus.value = 'disconnected';
+      if (wsSubIntervalId) { clearInterval(wsSubIntervalId); wsSubIntervalId = null; }
+      console.log('[WS] closed:', { code: ev.code, reason: ev.reason });
+    };
+
+    socket.onerror = (err) => {
+      wsStatus.value = 'error';
+      if (wsSubIntervalId) { clearInterval(wsSubIntervalId); wsSubIntervalId = null; }
+      console.error('[WS] error:', err);
+    };
+  } catch (e) {
+    wsStatus.value = 'error';
+    if (wsSubIntervalId) { clearInterval(wsSubIntervalId); wsSubIntervalId = null; }
+    console.error('[WS] exception while connecting:', e);
+  }
+}
+
+function toggleWs() {
+  if (wsStatus.value === 'connected' || wsStatus.value === 'connecting') {
+    console.log('[WS] manual disconnect requested');
+    cleanupWs();
+    wsStatus.value = 'disconnected';
+  } else {
+    console.log('[WS] manual connect requested');
+    connectWs();
+  }
+}
+
+// Reconnect when the URL changes
+watch(wsUrl, (n, o) => {
+  if (n !== o) connectWs();
+});
+
+// Efficient order book storage using reactive Maps keyed by numeric price
+const bidsMap = reactive(new Map()); // Map<number(price), number(qty)>
+const asksMap = reactive(new Map()); // Map<number(price), number(qty)>
+
+function applyLevels(side, levels) {
+  const target = side === 'bids' ? bidsMap : asksMap;
+  if (!Array.isArray(levels)) return;
+  for (const lvl of levels) {
+    if (!Array.isArray(lvl) || lvl.length < 2) continue;
+    const priceNum = Number(lvl[0]);
+    const qtyNum = Number(lvl[1]);
+    if (!isFinite(priceNum) || !isFinite(qtyNum)) continue;
+    if (qtyNum <= 0) {
+      // debug: removal from order book
+      console.log('[OB] remove level', { side, price: priceNum });
+      target.delete(priceNum);
+    } else {
+      target.set(priceNum, qtyNum);
+    }
+  }
+}
+
+function applyOrderBookMessage(data) {
+  if (!data) return;
+  // If snapshot=true, replace content; otherwise, apply incremental
+  if (data.snapshot === true) {
+    bidsMap.clear();
+    asksMap.clear();
+  }
+  if (Array.isArray(data.bids)) applyLevels('bids', data.bids);
+  if (Array.isArray(data.asks)) applyLevels('asks', data.asks);
+  tick.value++;
+}
+
 const bidsSorted = computed(() => {
-  const sorted = [...book.bids].sort((a, b) => b.price - a.price);
-  let cum = 0;
-  return sorted.map((r) => {
-    cum += r.qty;
-    return { ...r, cum };
+  const entries = [];
+  bidsMap.forEach((qty, priceStr) => {
+    const price = Number(priceStr);
+    if (!isFinite(price) || qty <= 0) return;
+    entries.push({ price, qty });
   });
+  entries.sort((a, b) => b.price - a.price);
+  const limit = Math.max(1, Math.min(100, Math.floor(config.maxLevels || entries.length || 1)));
+  let cum = 0;
+  return entries.slice(0, limit).map((r) => ({ ...r, cum: (cum += r.qty) }));
 });
 
 const asksSorted = computed(() => {
-  const sorted = [...book.asks].sort((a, b) => a.price - b.price);
-  let cum = 0;
-  return sorted.map((r) => {
-    cum += r.qty;
-    return { ...r, cum };
+  const entries = [];
+  asksMap.forEach((qty, priceStr) => {
+    const price = Number(priceStr);
+    if (!isFinite(price) || qty <= 0) return;
+    entries.push({ price, qty });
   });
+  entries.sort((a, b) => a.price - b.price);
+  const limit = Math.max(1, Math.min(100, Math.floor(config.maxLevels || entries.length || 1)));
+  let cum = 0;
+  return entries.slice(0, limit).map((r) => ({ ...r, cum: (cum += r.qty) }));
 });
 
 const bidMax = computed(() => bidsSorted.value.reduce((m, r) => Math.max(m, r.cum), 0) || 1);
@@ -96,13 +244,14 @@ const askMax = computed(() => asksSorted.value.reduce((m, r) => Math.max(m, r.cu
 const prettyConfig = computed(() => JSON.stringify(config, null, 2));
 
 function randomizeConfig() {
-  config.midPrice = 80 + rnd() * 40;
-  config.spreadTicks = Math.floor(1 + rnd() * 4);
-  config.qtyScale = +(0.5 + rnd() * 1.5).toFixed(2);
-  config.maxLevels = 10 + Math.floor(rnd() * 8);
-  config.riskLimits.maxNotional = 100000 + Math.floor(rnd() * 500000);
-  config.riskLimits.maxOrderQty = 5 + Math.floor(rnd() * 95);
-  config.riskLimits.maxSkew = +(0.1 + rnd()).toFixed(2);
+  const r = Math.random;
+  config.midPrice = 80 + r() * 40;
+  config.spreadTicks = Math.floor(1 + r() * 4);
+  config.qtyScale = +(0.5 + r() * 1.5).toFixed(2);
+  config.maxLevels = 10 + Math.floor(r() * 8);
+  config.riskLimits.maxNotional = 100000 + Math.floor(r() * 500000);
+  config.riskLimits.maxOrderQty = 5 + Math.floor(r() * 95);
+  config.riskLimits.maxSkew = +(0.1 + r()).toFixed(2);
 }
 
 let intervalId;
@@ -111,9 +260,32 @@ let clockId;
 const externalConfigText = ref('');
 const externalError = ref('');
 const externalLoading = ref(true);
+const externalHash = ref('');
 
-async function loadExternal() {
-  externalLoading.value = true;
+// Compute stable hex SHA-256 of a string using Web Crypto API
+async function sha256Hex(str) {
+  try {
+    const enc = new TextEncoder();
+    const data = enc.encode(str);
+    const digest = await crypto.subtle.digest('SHA-256', data);
+    const bytes = new Uint8Array(digest);
+    let hex = '';
+    for (let i = 0; i < bytes.length; i++) {
+      hex += bytes[i].toString(16).padStart(2, '0');
+    }
+    return hex;
+  } catch (e) {
+    // Fallback: simple checksum if crypto.subtle is unavailable (very unlikely in modern browsers)
+    let hash = 0;
+    for (let i = 0; i < str.length; i++) {
+      hash = (hash * 31 + str.charCodeAt(i)) >>> 0;
+    }
+    return String(hash);
+  }
+}
+
+async function loadExternal(withLoading = false) {
+  if (withLoading) externalLoading.value = true;
   externalError.value = '';
   try {
     const res = await fetch('/api/config/pricing-engine', { cache: 'no-store' });
@@ -122,22 +294,26 @@ async function loadExternal() {
       throw new Error(text || `HTTP ${res.status}`);
     }
     const text = await res.text();
-    // Pretty-print if valid JSON, else show raw
-    try {
-      const parsed = JSON.parse(text);
-      externalConfigText.value = JSON.stringify(parsed, null, 2);
-    } catch {
-      externalConfigText.value = text;
+    const newHash = await sha256Hex(text);
+    if (newHash !== externalHash.value) {
+      externalHash.value = newHash;
+      // Pretty-print if valid JSON, else show raw
+      try {
+        const parsed = JSON.parse(text);
+        externalConfigText.value = JSON.stringify(parsed, null, 2);
+      } catch {
+        externalConfigText.value = text;
+      }
     }
   } catch (e) {
     externalError.value = e?.message || String(e);
   } finally {
-    externalLoading.value = false;
+    if (withLoading) externalLoading.value = false;
   }
 }
 
 function reloadExternal() {
-  loadExternal();
+  loadExternal(true);
 }
 
 onMounted(() => {
@@ -145,25 +321,21 @@ onMounted(() => {
     timeStr.value = new Date().toLocaleString();
   }, 500);
 
-  loadExternal();
+  loadExternal(true);
+  // Poll external config every 1 second
+  intervalId = setInterval(() => loadExternal(false), 1000);
 
-  intervalId = setInterval(() => {
-    perturbBook(book, rnd);
-    for (const s of [book.bids, book.asks]) {
-      for (const r of s) r.qty = Math.max(0.01, r.qty * config.qtyScale);
-    }
-    const currentMid =
-      (Math.max(...book.bids.map((b) => b.price)) + Math.min(...book.asks.map((a) => a.price))) / 2;
-    const drift = (config.midPrice - currentMid) * 0.02;
-    for (const r of book.bids) r.price += drift;
-    for (const r of book.asks) r.price += drift;
-    tick.value++;
-  }, 700);
+  // Connect to the WebSocket on startup
+  connectWs();
+
+  // WebSocket-driven updates; no local simulation interval.
+  // tick increments when applying WS messages.
 });
 
 onBeforeUnmount(() => {
   clearInterval(intervalId);
   clearInterval(clockId);
+  cleanupWs();
 });
 </script>
 
@@ -184,53 +356,31 @@ onBeforeUnmount(() => {
         <button @click="randomizeConfig" style="all:unset; cursor:pointer; color: var(--accent);">randomize</button>
       </div>
       <div class="panel-body">
+        <div class="url-input">
+          <label>
+            <span>URL:</span>
+            <div class="url-row">
+              <input v-model="wsUrl" type="text" autocomplete="off" placeholder="ws://localhost:48000/api/v7" />
+              <span class="ws-status" :data-status="wsStatus">
+                <span class="dot" :class="wsStatus"></span>
+                <span class="label">{{ wsStatusDisplay }}</span>
+              </span>
+              <button type="button" class="ws-btn" @click="toggleWs">
+                {{ (wsStatus === 'connected' || wsStatus === 'connecting') ? 'Disconnect' : 'Connect' }}
+              </button>
+            </div>
+          </label>
+        </div>
         <form class="config-form" @submit.prevent>
           <div class="form-grid">
-            <label>
-              <span>Symbol</span>
-              <input v-model="config.symbol" type="text" autocomplete="off" />
-            </label>
-            <label>
-              <span>Venue</span>
-              <input v-model="config.venue" type="text" autocomplete="off" />
-            </label>
-            <label>
-              <span>Mid Price</span>
-              <input v-model.number="config.midPrice" type="number" step="0.01" />
-            </label>
-            <label>
-              <span>Spread Ticks</span>
-              <input v-model.number="config.spreadTicks" type="number" step="1" min="0" />
-            </label>
-            <label>
-              <span>Qty Scale</span>
-              <input v-model.number="config.qtyScale" type="number" step="0.01" min="0.01" />
-            </label>
             <label>
               <span>Max Levels</span>
               <input v-model.number="config.maxLevels" type="number" step="1" min="1" max="100" />
             </label>
           </div>
-          <fieldset class="fieldset">
-            <legend>Risk Limits</legend>
-            <div class="form-grid">
-              <label>
-                <span>Max Notional</span>
-                <input v-model.number="config.riskLimits.maxNotional" type="number" step="1000" min="0" />
-              </label>
-              <label>
-                <span>Max Order Qty</span>
-                <input v-model.number="config.riskLimits.maxOrderQty" type="number" step="1" min="1" />
-              </label>
-              <label>
-                <span>Max Skew</span>
-                <input v-model.number="config.riskLimits.maxSkew" type="number" step="0.01" min="0" max="1" />
-              </label>
-            </div>
-          </fieldset>
         </form>
-        <details class="json-preview">
-          <summary>JSON (config service)</summary>
+        <details class="json-preview" open>
+          <summary>JSON (PRICING_ENGINE.json)</summary>
           <template v-if="externalLoading">
             <pre class="json">Loading PRICING_ENGINE.json ...</pre>
           </template>
@@ -300,12 +450,13 @@ Ensure the file exists and is readable.
         </div>
       </div>
       <footer class="note">
-        Suggestion for realtime tables with Vue:
-        <ul>
-          <li>AG Grid Community (Vue wrapper) – very fast and feature-rich.</li>
-          <li>TanStack Table (Vue Table) – lightweight headless table; pair with your own styling.</li>
-        </ul>
-        This demo uses plain Vue reactivity without extra libs for minimal setup.
+        Pricing engine order book
+<!--        Suggestion for realtime tables with Vue:-->
+<!--        <ul>-->
+<!--          <li>AG Grid Community (Vue wrapper) – very fast and feature-rich.</li>-->
+<!--          <li>TanStack Table (Vue Table) – lightweight headless table; pair with your own styling.</li>-->
+<!--        </ul>-->
+<!--        This demo uses plain Vue reactivity without extra libs for minimal setup.-->
       </footer>
     </section>
   </div>
@@ -405,6 +556,7 @@ pre.json {
   font-size: 12px;
   color: var(--muted);
 }
+.url-input input[type="text"],
 .form-grid input[type="text"],
 .form-grid input[type="number"],
 .fieldset input[type="number"] {
@@ -427,6 +579,19 @@ pre.json {
   color: var(--muted);
   font-size: 12px;
 }
+.url-input { margin-bottom: 10px; }
+.url-input label { display:flex; flex-direction: column; gap: 6px; font-size: 12px; color: var(--muted); }
+.url-row { display: flex; align-items: center; gap: 8px; }
+.url-row input { flex: 1; min-width: 0; }
+.ws-status { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); padding: 4px 8px; border: 1px solid var(--divider); border-radius: 6px; background: #0b0f19; white-space: nowrap; }
+.ws-status .dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+.ws-status .dot.connected { background: var(--bid); }
+.ws-status .dot.connecting { background: #f59e0b; /* amber */ }
+.ws-status .dot.disconnected { background: #6b7280; /* gray */ }
+.ws-status .dot.error { background: var(--ask); }
+.ws-btn { appearance: none; background: var(--accent); color: #fff; border: 0; border-radius: 6px; padding: 6px 10px; font-size: 12px; cursor: pointer; }
+.ws-btn:hover { filter: brightness(1.05); }
+.ws-btn:disabled { opacity: 0.6; cursor: not-allowed; }
 .json-preview summary {
   cursor: pointer;
   color: var(--accent);
