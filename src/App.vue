@@ -1,5 +1,5 @@
 <script setup>
-import { computed, reactive, ref, onMounted, onBeforeUnmount, watch } from 'vue';
+import { computed, reactive, ref, onMounted, onBeforeUnmount, watch, nextTick } from 'vue';
 
 function seededRandom(seed) {
   let s = seed % 2147483647;
@@ -261,6 +261,15 @@ const externalConfigText = ref('');
 const externalError = ref('');
 const externalLoading = ref(true);
 const externalHash = ref('');
+// Inline JSON editor state
+const isEditing = ref(false);
+const editorText = ref('');
+const saving = ref(false);
+const saveError = ref('');
+const saveStatus = ref('');
+// DOM refs for sizing the editor equal to preview height
+const jsonPreviewEl = ref(null);
+const jsonEditorEl = ref(null);
 
 // Compute stable hex SHA-256 of a string using Web Crypto API
 async function sha256Hex(str) {
@@ -297,12 +306,14 @@ async function loadExternal(withLoading = false) {
     const newHash = await sha256Hex(text);
     if (newHash !== externalHash.value) {
       externalHash.value = newHash;
-      // Pretty-print if valid JSON, else show raw
-      try {
-        const parsed = JSON.parse(text);
-        externalConfigText.value = JSON.stringify(parsed, null, 2);
-      } catch {
-        externalConfigText.value = text;
+      // Only update the on-screen JSON if not currently editing
+      if (!isEditing.value) {
+        try {
+          const parsed = JSON.parse(text);
+          externalConfigText.value = JSON.stringify(parsed, null, 2);
+        } catch {
+          externalConfigText.value = text;
+        }
       }
     }
   } catch (e) {
@@ -314,6 +325,58 @@ async function loadExternal(withLoading = false) {
 
 function reloadExternal() {
   loadExternal(true);
+}
+
+function startEdit() {
+  saveError.value = '';
+  saveStatus.value = '';
+  editorText.value = externalConfigText.value || '';
+  // Measure current preview height before switching to edit
+  const previewHeight = jsonPreviewEl.value ? jsonPreviewEl.value.clientHeight : 0;
+  isEditing.value = true;
+  nextTick(() => {
+    if (jsonEditorEl.value) {
+      const h = Math.max(220, previewHeight || 0);
+      jsonEditorEl.value.style.height = h + 'px';
+    }
+  });
+}
+
+function cancelEdit() {
+  isEditing.value = false;
+  saving.value = false;
+  saveError.value = '';
+  saveStatus.value = '';
+}
+
+async function saveEdit() {
+  if (saving.value) return;
+  saveError.value = '';
+  saveStatus.value = '';
+  saving.value = true;
+  try {
+    // Validate JSON and pretty-print
+    const parsed = JSON.parse(editorText.value);
+    const pretty = JSON.stringify(parsed, null, 2);
+    const res = await fetch('/api/config/pricing-engine', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: pretty,
+    });
+    if (!res.ok) {
+      let msg = `HTTP ${res.status}`;
+      try { const j = await res.json(); msg = j.error || j.message || msg; } catch {}
+      throw new Error(msg);
+    }
+    externalConfigText.value = pretty;
+    externalHash.value = await sha256Hex(pretty);
+    saveStatus.value = 'Saved';
+    isEditing.value = false;
+  } catch (e) {
+    saveError.value = e?.message || String(e);
+  } finally {
+    saving.value = false;
+  }
 }
 
 onMounted(() => {
@@ -391,10 +454,23 @@ Ensure the file exists and is readable.
 <button style='all:unset; cursor:pointer; color: var(--accent);' @click="reloadExternal">retry</button></pre>
           </template>
           <template v-else>
-            <pre class="json">{{ externalConfigText }}</pre>
-            <div style="margin-top:6px; font-size:12px; color: var(--muted);">
-              <button style="all:unset; cursor:pointer; color: var(--accent);" @click="reloadExternal">refresh</button>
-            </div>
+            <template v-if="isEditing">
+              <textarea class="json-editor" v-model="editorText" spellcheck="false" ref="jsonEditorEl"></textarea>
+              <div class="editor-actions">
+                <button class="btn" @click="cancelEdit" :disabled="saving">Cancel</button>
+                <button class="btn primary" @click="saveEdit" :disabled="saving">Save</button>
+                <span class="status" v-if="saving">Saving...</span>
+                <span class="status error" v-if="!saving && saveError">{{ saveError }}</span>
+                <span class="status ok" v-if="!saving && saveStatus">{{ saveStatus }}</span>
+              </div>
+            </template>
+            <template v-else>
+              <pre class="json" ref="jsonPreviewEl">{{ externalConfigText }}</pre>
+              <div class="editor-actions">
+                <button class="btn" @click="reloadExternal">Refresh</button>
+                <button class="btn primary" @click="startEdit">Edit</button>
+              </div>
+            </template>
           </template>
         </details>
       </div>
@@ -658,4 +734,26 @@ a:hover { text-decoration: underline; }
   .container { grid-template-columns: 1fr; height: auto; }
   .panel { min-height: 300px; }
 }
+
+/* JSON inline editor */
+.json-editor {
+  width: 100%;
+  min-height: 220px;
+  resize: vertical;
+  background: #0c0f1a;
+  color: var(--text);
+  border: 1px solid #223;
+  border-radius: 8px;
+  padding: 10px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  font-size: 12px;
+  line-height: 1.4;
+}
+.editor-actions { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
+.btn { appearance: none; background: #0b0f19; color: var(--text); border: 1px solid var(--divider); border-radius: 6px; padding: 6px 10px; font-size: 12px; cursor: pointer; }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+.btn:disabled { opacity: 0.6; cursor: not-allowed; }
+.status { font-size: 12px; color: var(--muted); }
+.status.error { color: var(--ask); }
+.status.ok { color: var(--bid); }
 </style>
