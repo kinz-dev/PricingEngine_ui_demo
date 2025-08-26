@@ -241,6 +241,34 @@ const asksSorted = computed(() => {
 const bidMax = computed(() => bidsSorted.value.reduce((m, r) => Math.max(m, r.cum), 0) || 1);
 const askMax = computed(() => asksSorted.value.reduce((m, r) => Math.max(m, r.cum), 0) || 1);
 
+// Top-of-book and spread (bps)
+const bestBid = computed(() => (bidsSorted.value.length ? bidsSorted.value[0].price : NaN));
+const bestAsk = computed(() => (asksSorted.value.length ? asksSorted.value[0].price : NaN));
+const spread = computed(() => {
+  const b = bestBid.value;
+  const a = bestAsk.value;
+  return Number.isFinite(b) && Number.isFinite(a) ? a - b : NaN;
+});
+const spreadBps = computed(() => {
+  const b = bestBid.value;
+  const a = bestAsk.value;
+  const s = spread.value;
+  if (!Number.isFinite(b) || !Number.isFinite(a) || !Number.isFinite(s)) return NaN;
+  const mid = (a + b) / 2;
+  if (!Number.isFinite(mid) || mid === 0) return NaN;
+  return (s / mid) * 10000;
+});
+const spreadBpsDisplay = computed(() =>
+  Number.isFinite(spreadBps.value) ? `${spreadBps.value >= 0 ? '+' : ''}${spreadBps.value.toFixed(1)}` : '—'
+);
+const spreadSignClass = computed(() => {
+  const v = spreadBps.value;
+  if (!Number.isFinite(v)) return 'zero';
+  if (v > 0) return 'pos';
+  if (v < 0) return 'neg';
+  return 'zero';
+});
+
 const prettyConfig = computed(() => JSON.stringify(config, null, 2));
 
 function randomizeConfig() {
@@ -403,6 +431,15 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
+  <aside class="nav-drawer">
+    <div class="nav-brand">Menu</div>
+    <nav class="nav-menu">
+      <a class="nav-item active" href="#">
+        <span class="nav-dot"></span>
+        <span>Pricing engine</span>
+      </a>
+    </nav>
+  </aside>
   <header>
     <div>
       <div class="title">Pricing Engine UI</div>
@@ -526,13 +563,8 @@ Ensure the file exists and is readable.
         </div>
       </div>
       <footer class="note">
-        Pricing engine order book
-<!--        Suggestion for realtime tables with Vue:-->
-<!--        <ul>-->
-<!--          <li>AG Grid Community (Vue wrapper) – very fast and feature-rich.</li>-->
-<!--          <li>TanStack Table (Vue Table) – lightweight headless table; pair with your own styling.</li>-->
-<!--        </ul>-->
-<!--        This demo uses plain Vue reactivity without extra libs for minimal setup.-->
+        <div>Pricing engine order book</div>
+        <div>Spread: <span class="spread" :class="spreadSignClass">{{ spreadBpsDisplay }}</span> bps</div>
       </footer>
     </section>
   </div>
@@ -573,6 +605,33 @@ header {
 }
 .title { font-weight: 700; letter-spacing: 0.3px; }
 .subtitle { color: var(--muted); font-size: 12px; }
+
+:root { --drawer-w: 220px; }
+
+/* Left navigation drawer */
+.nav-drawer {
+  position: fixed;
+  top: 0;
+  left: 0;
+  bottom: 0;
+  width: var(--drawer-w);
+  background: rgba(23,26,43,0.85);
+  border-right: 1px solid var(--divider);
+  backdrop-filter: blur(6px);
+  padding: 12px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.nav-brand { font-weight: 700; font-size: 14px; color: var(--muted); padding: 6px 8px; }
+.nav-menu { display: flex; flex-direction: column; gap: 4px; }
+.nav-item { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-radius: 8px; color: var(--text); text-decoration: none; border: 1px solid transparent; }
+.nav-item .nav-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); opacity: 0.8; }
+.nav-item.active { background: rgba(59,130,246,0.12); border-color: rgba(59,130,246,0.25); }
+.nav-item:hover { background: rgba(255,255,255,0.06); }
+
+/* Offset main content to the right of the drawer */
+body { margin-left: var(--drawer-w); }
 
 .container {
   display: grid;
@@ -709,6 +768,12 @@ pre.json {
 .bid { color: var(--bid); }
 .ask { color: var(--ask); }
 
+/* Spread coloring */
+.spread { font-variant-numeric: tabular-nums; }
+.spread.pos { color: var(--bid); }
+.spread.neg { color: var(--ask); }
+.spread.zero { color: var(--muted); }
+
 .depth-bar {
   position: relative;
   overflow: hidden;
@@ -731,6 +796,8 @@ a { color: var(--accent); text-decoration: none; }
 a:hover { text-decoration: underline; }
 
 @media (max-width: 900px) {
+  .nav-drawer { display: none; }
+  body { margin-left: 0; }
   .container { grid-template-columns: 1fr; height: auto; }
   .panel { min-height: 300px; }
 }
