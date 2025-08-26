@@ -691,7 +691,7 @@ onBeforeUnmount(() => {
     <section class="panel">
       <div class="panel-header">
         <div class="panel-title">Pricing Engine Configuration</div>
-        <button @click="randomizeConfig" style="all:unset; cursor:pointer; color: var(--accent);">randomize</button>
+        <!--        <button @click="randomizeConfig" style="all:unset; cursor:pointer; color: var(&#45;&#45;accent);">randomize</button>-->
       </div>
       <div class="panel-body">
         <div class="url-input">
