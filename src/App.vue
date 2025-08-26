@@ -43,6 +43,9 @@ function perturbBook(book, rand) {
 const tick = ref(0);
 const timeStr = ref('');
 
+// Simple in-app navigation between pages
+const activePage = ref('pricing'); // 'pricing' | 'execution'
+
 const config = reactive({
   symbol: 'XYZ-USD',
   venue: 'SIM',
@@ -175,27 +178,207 @@ function toggleWs() {
 
 // Reconnect when the URL changes
 watch(wsUrl, (n, o) => {
-  if (n !== o) connectWs();
+  if (n !== o && activePage.value === 'pricing') connectWs();
+});
+
+// Execution Service WebSocket state
+const esWsUrl = ref('ws://localhost:48010/api/v4');
+const esWs = ref(null);
+const esWsStatus = ref('disconnected'); // 'connecting' | 'connected' | 'disconnected' | 'error'
+const esWsStatusDisplay = computed(() => {
+  switch (esWsStatus.value) {
+    case 'connected': return 'Connected';
+    case 'connecting': return 'Connecting';
+    case 'error': return 'Error';
+    default: return 'Disconnected';
+  }
+});
+
+function cleanupEsWs() {
+  try {
+    if (esWs.value) {
+      esWs.value.onopen = null;
+      esWs.value.onmessage = null;
+      esWs.value.onclose = null;
+      esWs.value.onerror = null;
+      esWs.value.close();
+    }
+  } catch (e) {
+    // ignore
+  } finally {
+    esWs.value = null;
+  }
+}
+
+function connectEsWs() {
+  cleanupEsWs();
+  if (!esWsUrl.value) {
+    esWsStatus.value = 'disconnected';
+    return;
+  }
+  try {
+    esWsStatus.value = 'connecting';
+    const socket = new WebSocket(esWsUrl.value);
+    esWs.value = socket;
+    socket.onopen = () => { esWsStatus.value = 'connected'; };
+    socket.onclose = () => { esWsStatus.value = 'disconnected'; };
+    socket.onerror = () => { esWsStatus.value = 'error'; };
+  } catch (e) {
+    esWsStatus.value = 'error';
+  }
+}
+
+function toggleEsWs() {
+  if (esWsStatus.value === 'connected' || esWsStatus.value === 'connecting') {
+    cleanupEsWs();
+    esWsStatus.value = 'disconnected';
+  } else {
+    connectEsWs();
+  }
+}
+
+watch(esWsUrl, (n, o) => {
+  if (n !== o && activePage.value === 'execution') connectEsWs();
+});
+
+// Execution form state and payload
+const execForm = reactive({
+  op: 'placeOrder',
+  reqId: 'req-1',
+  orgId: '9999',
+  symbol: 'BTC/USDT',
+  strategy: 'TWAP',
+  px: '121600',
+  qty: '0.06',
+  side: 'BUY',
+  accountBookKey: 'okx_main',
+  accountBookValue: 'BOOK_1',
+  timeInForce: 'GOOD_TILL_CANCEL',
+  clientOrderId: 'cl-0001',
+  params: {
+    startTimeMillis: '1752962400000',
+    endTimeMillis: '1752926400000',
+    intervalMillis: 300000,
+  },
+});
+
+// --- Date/Time helpers for datetime-local inputs (local timezone) ---
+function pad2(n) { return String(n).padStart(2, '0'); }
+function millisToLocalInput(msStr) {
+  const n = Number(msStr);
+  if (!isFinite(n)) return '';
+  const d = new Date(n);
+  if (isNaN(d.getTime())) return '';
+  const y = d.getFullYear();
+  const m = pad2(d.getMonth() + 1);
+  const day = pad2(d.getDate());
+  const hh = pad2(d.getHours());
+  const mm = pad2(d.getMinutes());
+  const ss = pad2(d.getSeconds());
+  // Include seconds and set step=1 on input so seconds are allowed
+  return `${y}-${m}-${day}T${hh}:${mm}:${ss}`;
+}
+function localInputToMillis(str) {
+  if (!str) return '';
+  const d = new Date(str);
+  const t = d.getTime();
+  if (isNaN(t)) return '';
+  return String(t);
+}
+
+// Local datetime input models for UX; we map them to millis in execForm
+const startLocal = ref(millisToLocalInput(execForm.params.startTimeMillis));
+const endLocal = ref(millisToLocalInput(execForm.params.endTimeMillis));
+
+watch(startLocal, (v) => {
+  execForm.params.startTimeMillis = localInputToMillis(v);
+});
+watch(endLocal, (v) => {
+  execForm.params.endTimeMillis = localInputToMillis(v);
+});
+
+const execPayload = computed(() => ({
+  op: execForm.op,
+  reqId: execForm.reqId,
+  orgId: execForm.orgId,
+  symbol: execForm.symbol,
+  strategy: execForm.strategy,
+  px: execForm.px,
+  qty: execForm.qty,
+  side: execForm.side,
+  accountBookMapping: { [execForm.accountBookKey || 'okx_main']: execForm.accountBookValue || 'BOOK_1' },
+  timeInForce: execForm.timeInForce,
+  clientOrderId: execForm.clientOrderId,
+  params: {
+    startTimeMillis: execForm.params.startTimeMillis,
+    endTimeMillis: execForm.params.endTimeMillis,
+    intervalMillis: Number(execForm.params.intervalMillis),
+  }
+}));
+
+const execPayloadText = computed(() => JSON.stringify(execPayload.value, null, 2));
+const execSendStatus = ref('');
+const execSendError = ref('');
+
+function sendExec() {
+  execSendStatus.value = '';
+  execSendError.value = '';
+  const socket = esWs.value;
+  if (!socket || socket.readyState !== 1) {
+    execSendError.value = 'WebSocket not connected';
+    return;
+  }
+  try {
+    const text = execPayloadText.value;
+    socket.send(text);
+    execSendStatus.value = 'Sent';
+  } catch (e) {
+    execSendError.value = e?.message || String(e);
+  }
+}
+
+// Manage WS connections based on active page
+watch(activePage, (n, o) => {
+  if (n === 'pricing') {
+    connectWs();
+    cleanupEsWs();
+  } else if (n === 'execution') {
+    connectEsWs();
+    cleanupWs();
+  }
 });
 
 // Efficient order book storage using reactive Maps keyed by numeric price
 const bidsMap = reactive(new Map()); // Map<number(price), number(qty)>
 const asksMap = reactive(new Map()); // Map<number(price), number(qty)>
+const bidsExchangesMap = reactive(new Map()); // Map<number(price), string(csv exchange ids)>
+const asksExchangesMap = reactive(new Map()); // Map<number(price), string(csv exchange ids)>
 
 function applyLevels(side, levels) {
-  const target = side === 'bids' ? bidsMap : asksMap;
+  const qtyTarget = side === 'bids' ? bidsMap : asksMap;
+  const exTarget = side === 'bids' ? bidsExchangesMap : asksExchangesMap;
   if (!Array.isArray(levels)) return;
+  // Aggregate per message by price: sum quantities and gather exchanges
+  const agg = new Map(); // Map<number, { qty:number, exchanges:Set<string> }>
   for (const lvl of levels) {
     if (!Array.isArray(lvl) || lvl.length < 2) continue;
     const priceNum = Number(lvl[0]);
     const qtyNum = Number(lvl[1]);
+    const exch = (lvl.length >= 3 && lvl[2] != null) ? String(lvl[2]).trim() : '';
     if (!isFinite(priceNum) || !isFinite(qtyNum)) continue;
-    if (qtyNum <= 0) {
-      // debug: removal from order book
-      console.log('[OB] remove level', { side, price: priceNum });
-      target.delete(priceNum);
+    const rec = agg.get(priceNum) || { qty: 0, exchanges: new Set() };
+    rec.qty += qtyNum;
+    if (exch) rec.exchanges.add(exch);
+    agg.set(priceNum, rec);
+  }
+  for (const [price, { qty, exchanges }] of agg.entries()) {
+    if (qty <= 0) {
+      console.log('[OB] remove level', { side, price });
+      qtyTarget.delete(price);
+      exTarget.delete(price);
     } else {
-      target.set(priceNum, qtyNum);
+      qtyTarget.set(price, qty);
+      exTarget.set(price, Array.from(exchanges).join(','));
     }
   }
 }
@@ -206,6 +389,8 @@ function applyOrderBookMessage(data) {
   if (data.snapshot === true) {
     bidsMap.clear();
     asksMap.clear();
+    bidsExchangesMap.clear();
+    asksExchangesMap.clear();
   }
   if (Array.isArray(data.bids)) applyLevels('bids', data.bids);
   if (Array.isArray(data.asks)) applyLevels('asks', data.asks);
@@ -214,10 +399,11 @@ function applyOrderBookMessage(data) {
 
 const bidsSorted = computed(() => {
   const entries = [];
-  bidsMap.forEach((qty, priceStr) => {
-    const price = Number(priceStr);
+  bidsMap.forEach((qty, priceKey) => {
+    const price = Number(priceKey);
     if (!isFinite(price) || qty <= 0) return;
-    entries.push({ price, qty });
+    const exchanges = bidsExchangesMap.get(price) || '';
+    entries.push({ price, qty, exchanges });
   });
   entries.sort((a, b) => b.price - a.price);
   const limit = Math.max(1, Math.min(100, Math.floor(config.maxLevels || entries.length || 1)));
@@ -227,10 +413,11 @@ const bidsSorted = computed(() => {
 
 const asksSorted = computed(() => {
   const entries = [];
-  asksMap.forEach((qty, priceStr) => {
-    const price = Number(priceStr);
+  asksMap.forEach((qty, priceKey) => {
+    const price = Number(priceKey);
     if (!isFinite(price) || qty <= 0) return;
-    entries.push({ price, qty });
+    const exchanges = asksExchangesMap.get(price) || '';
+    entries.push({ price, qty, exchanges });
   });
   entries.sort((a, b) => a.price - b.price);
   const limit = Math.max(1, Math.min(100, Math.floor(config.maxLevels || entries.length || 1)));
@@ -240,6 +427,32 @@ const asksSorted = computed(() => {
 
 const bidMax = computed(() => bidsSorted.value.reduce((m, r) => Math.max(m, r.cum), 0) || 1);
 const askMax = computed(() => asksSorted.value.reduce((m, r) => Math.max(m, r.cum), 0) || 1);
+
+// Exchange icons mapping
+const EX_ICON_BINANCE = 'https://image.immix.xyz/exchanges/binance_spot-colour-dark.svg';
+const EX_ICON_OKX = 'https://image.immix.xyz/exchanges/okx-colour-light.svg';
+
+function mapExchangesToIcons(exchangesCsv) {
+  try {
+    if (!exchangesCsv) return [];
+    const parts = String(exchangesCsv)
+      .split(',')
+      .map(s => s.trim())
+      .filter(Boolean);
+    let hasBinance = false;
+    let hasOkx = false;
+    for (const p of parts) {
+      if (p.startsWith('100')) hasBinance = true;
+      else if (p.startsWith('300')) hasOkx = true;
+    }
+    const icons = [];
+    if (hasOkx) icons.push({ url: EX_ICON_OKX, alt: 'OKX', title: 'OKX' });
+    if (hasBinance) icons.push({ url: EX_ICON_BINANCE, alt: 'Binance Spot', title: 'Binance Spot' });
+    return icons;
+  } catch (e) {
+    return [];
+  }
+}
 
 // Top-of-book and spread (bps)
 const bestBid = computed(() => (bidsSorted.value.length ? bidsSorted.value[0].price : NaN));
@@ -407,7 +620,24 @@ async function saveEdit() {
   }
 }
 
+// Left drawer collapse state
+const drawerCollapsed = ref(false);
+function applyDrawerState() {
+  const b = document.body;
+  if (drawerCollapsed.value) b.classList.add('drawer-collapsed');
+  else b.classList.remove('drawer-collapsed');
+}
+function toggleDrawer() {
+  drawerCollapsed.value = !drawerCollapsed.value;
+  try { localStorage.setItem('drawerCollapsed', drawerCollapsed.value ? '1' : '0'); } catch {}
+  applyDrawerState();
+}
+
 onMounted(() => {
+  // init drawer collapsed state
+  try { drawerCollapsed.value = localStorage.getItem('drawerCollapsed') === '1'; } catch {}
+  applyDrawerState();
+
   clockId = setInterval(() => {
     timeStr.value = new Date().toLocaleString();
   }, 500);
@@ -427,28 +657,36 @@ onBeforeUnmount(() => {
   clearInterval(intervalId);
   clearInterval(clockId);
   cleanupWs();
+  cleanupEsWs();
 });
 </script>
 
 <template>
   <aside class="nav-drawer">
-    <div class="nav-brand">Menu</div>
+    <button type="button" class="drawer-toggle" :aria-expanded="!drawerCollapsed" :title="drawerCollapsed ? 'Expand' : 'Collapse'" @click="toggleDrawer">
+      <span v-if="drawerCollapsed">»</span>
+      <span v-else>«</span>
+    </button>
+    <div class="nav-brand">IMMIX</div>
     <nav class="nav-menu">
-      <a class="nav-item active" href="#">
-        <span class="nav-dot"></span>
-        <span>Pricing engine</span>
+      <a class="nav-item" :class="{ active: activePage === 'pricing' }" href="#" @click.prevent="activePage = 'pricing'">
+        <span class="nav-label">Pricing engine</span>
+      </a>
+      <a class="nav-item" :class="{ active: activePage === 'execution' }" href="#" @click.prevent="activePage = 'execution'">
+        <span class="nav-label">Execution service</span>
       </a>
     </nav>
   </aside>
   <header>
     <div>
-      <div class="title">Pricing Engine UI</div>
-      <div class="subtitle">Custom Order Book (Bids in green, Asks in red)</div>
+      <div class="title">{{ activePage === 'pricing' ? 'Pricing Engine' : 'Execution Service' }}</div>
+      <div class="subtitle" v-if="activePage === 'pricing'">Custom Order Book (Bids in green, Asks in red)</div>
+      <div class="subtitle" v-else>Place orders via WebSocket</div>
     </div>
     <div class="subtitle">Local time: <span>{{ timeStr }}</span></div>
   </header>
 
-  <div class="container">
+  <div class="container" v-if="activePage === 'pricing'">
     <!-- Left: Configuration JSON -->
     <section class="panel">
       <div class="panel-header">
@@ -525,12 +763,28 @@ Ensure the file exists and is readable.
           <div class="table-header">
             <div>Price</div>
             <div>Total</div>
+            <div>Exchanges</div>
             <div>Quantity</div>
           </div>
           <div class="rows">
             <div v-for="(row, i) in bidsSorted" :key="'bid-'+i" class="row">
               <div class="bid">{{ row.price.toFixed(2) }}</div>
               <div>{{ row.cum.toFixed(4) }}</div>
+              <div class="exchanges">
+                <template v-if="mapExchangesToIcons(row.exchanges).length">
+                  <img
+                    v-for="(icon, idx) in mapExchangesToIcons(row.exchanges)"
+                    :key="icon.url + '-' + idx"
+                    :src="icon.url"
+                    :alt="icon.alt"
+                    :title="icon.title"
+                    class="exch-icon"
+                  />
+                </template>
+                <template v-else>
+                  {{ row.exchanges }}
+                </template>
+              </div>
               <div>
                 <div class="depth-bar">
                   <div class="depth-fill bid" :style="{ width: (row.cum/bidMax*100).toFixed(1)+'%' }"></div>
@@ -545,6 +799,7 @@ Ensure the file exists and is readable.
           <div class="table-title ask">Asks</div>
           <div class="table-header">
             <div>Quantity</div>
+            <div>Exchanges</div>
             <div>Total</div>
             <div>Price</div>
           </div>
@@ -556,6 +811,21 @@ Ensure the file exists and is readable.
                   <span class="depth-text">{{ row.qty.toFixed(4) }}</span>
                 </div>
               </div>
+              <div class="exchanges">
+                <template v-if="mapExchangesToIcons(row.exchanges).length">
+                  <img
+                    v-for="(icon, idx) in mapExchangesToIcons(row.exchanges)"
+                    :key="icon.url + '-' + idx"
+                    :src="icon.url"
+                    :alt="icon.alt"
+                    :title="icon.title"
+                    class="exch-icon"
+                  />
+                </template>
+                <template v-else>
+                  {{ row.exchanges }}
+                </template>
+              </div>
               <div>{{ row.cum.toFixed(4) }}</div>
               <div class="ask">{{ row.price.toFixed(2) }}</div>
             </div>
@@ -566,6 +836,119 @@ Ensure the file exists and is readable.
         <div>Pricing engine order book</div>
         <div>Spread: <span class="spread" :class="spreadSignClass">{{ spreadBpsDisplay }}</span> bps</div>
       </footer>
+    </section>
+  </div>
+
+  <!-- Execution Service Page -->
+  <div class="container" v-else>
+    <!-- Left: Execution form and WS controls -->
+    <section class="panel">
+      <div class="panel-header">
+        <div class="panel-title">Execution Service</div>
+      </div>
+      <div class="panel-body">
+        <div class="url-input">
+          <label>
+            <span>URL:</span>
+            <div class="url-row">
+              <input v-model="esWsUrl" type="text" autocomplete="off" placeholder="ws://localhost:48010/api/v4" />
+              <span class="ws-status" :data-status="esWsStatus">
+                <span class="dot" :class="esWsStatus"></span>
+                <span class="label">{{ esWsStatusDisplay }}</span>
+              </span>
+              <button type="button" class="ws-btn" @click="toggleEsWs">
+                {{ (esWsStatus === 'connected' || esWsStatus === 'connecting') ? 'Disconnect' : 'Connect' }}
+              </button>
+            </div>
+          </label>
+        </div>
+
+        <form class="config-form" @submit.prevent>
+          <div class="form-grid">
+            <label>
+              <span>op</span>
+              <input v-model="execForm.op" type="text" />
+            </label>
+            <label>
+              <span>reqId</span>
+              <input v-model="execForm.reqId" type="text" />
+            </label>
+            <label>
+              <span>orgId</span>
+              <input v-model="execForm.orgId" type="text" />
+            </label>
+            <label>
+              <span>symbol</span>
+              <input v-model="execForm.symbol" type="text" />
+            </label>
+            <label>
+              <span>strategy</span>
+              <input v-model="execForm.strategy" type="text" />
+            </label>
+            <label>
+              <span>px</span>
+              <input v-model="execForm.px" type="text" />
+            </label>
+            <label>
+              <span>qty</span>
+              <input v-model="execForm.qty" type="text" />
+            </label>
+            <label>
+              <span>side</span>
+              <input v-model="execForm.side" type="text" />
+            </label>
+            <label>
+              <span>accountBookMapping key</span>
+              <input v-model="execForm.accountBookKey" type="text" />
+            </label>
+            <label>
+              <span>accountBookMapping value</span>
+              <input v-model="execForm.accountBookValue" type="text" />
+            </label>
+            <label>
+              <span>timeInForce</span>
+              <input v-model="execForm.timeInForce" type="text" />
+            </label>
+            <label>
+              <span>clientOrderId</span>
+              <input v-model="execForm.clientOrderId" type="text" />
+            </label>
+          </div>
+
+          <fieldset class="fieldset">
+            <legend>params</legend>
+            <div class="form-grid">
+              <label>
+                <span>startTimeMillis</span>
+                <input v-model="startLocal" type="datetime-local" step="1" />
+              </label>
+              <label>
+                <span>endTimeMillis</span>
+                <input v-model="endLocal" type="datetime-local" step="1" />
+              </label>
+              <label>
+                <span>intervalMillis</span>
+                <input v-model.number="execForm.params.intervalMillis" type="number" step="1" min="1" />
+              </label>
+            </div>
+          </fieldset>
+        </form>
+      </div>
+    </section>
+
+    <!-- Right: JSON Preview and Send -->
+    <section class="panel">
+      <div class="panel-header">
+        <div class="panel-title">JSON (placeOrder)</div>
+        <div class="subtitle" v-if="execSendStatus">{{ execSendStatus }}</div>
+        <div class="subtitle" v-if="execSendError" style="color: var(--ask)">{{ execSendError }}</div>
+      </div>
+      <div class="panel-body">
+        <pre class="json">{{ execPayloadText }}</pre>
+        <div class="editor-actions">
+          <button class="btn" @click="sendExec" :disabled="esWsStatus !== 'connected'">Send</button>
+        </div>
+      </div>
     </section>
   </div>
 </template>
@@ -589,6 +972,8 @@ body {
   color: var(--text);
   background: linear-gradient(to bottom right, #0f1220, #0b0e1a);
   min-height: 100vh;
+  --drawer-w: 220px;
+  transition: margin-left 0.2s ease;
 }
 
 header {
@@ -622,7 +1007,32 @@ header {
   display: flex;
   flex-direction: column;
   gap: 8px;
+  z-index: 20;
+  transition: width 0.2s ease, padding 0.2s ease;
 }
+
+.drawer-toggle {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+  border: 1px solid var(--divider);
+  background: #0b0f19;
+  color: var(--text);
+  cursor: pointer;
+}
+.drawer-toggle:hover { filter: brightness(1.05); }
+
+/* Collapsed state via body class; narrows drawer and hides labels */
+body.drawer-collapsed { --drawer-w: 56px; }
+body.drawer-collapsed .nav-brand,
+body.drawer-collapsed .nav-label { display: none; }
+body.drawer-collapsed .nav-item { justify-content: center; padding: 8px; }
 .nav-brand { font-weight: 700; font-size: 14px; color: var(--muted); padding: 6px 8px; }
 .nav-menu { display: flex; flex-direction: column; gap: 4px; }
 .nav-item { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-radius: 8px; color: var(--text); text-decoration: none; border: 1px solid transparent; }
@@ -694,7 +1104,9 @@ pre.json {
 .url-input input[type="text"],
 .form-grid input[type="text"],
 .form-grid input[type="number"],
-.fieldset input[type="number"] {
+.form-grid input[type="datetime-local"],
+.fieldset input[type="number"],
+.fieldset input[type="datetime-local"] {
   appearance: none;
   background: #0b0f19;
   border: 1px solid #223;
@@ -702,6 +1114,7 @@ pre.json {
   border-radius: 6px;
   padding: 8px 10px;
   font-size: 13px;
+  color-scheme: dark;
 }
 .fieldset {
   border: 1px solid var(--divider);
@@ -752,7 +1165,7 @@ pre.json {
 
 .table-header {
   display: grid;
-  grid-template-columns: 1fr 1fr 1fr;
+  grid-template-columns: 1fr 1fr 1fr 1fr;
   padding: 8px 10px;
   border-bottom: 1px solid var(--divider);
   font-size: 12px;
@@ -762,7 +1175,7 @@ pre.json {
 
 .rows { overflow: auto; flex: 1; }
 
-.row { display: grid; grid-template-columns: 1fr 1fr 1fr; padding: 6px 10px; font-size: 13px; align-items: center; }
+.row { display: grid; grid-template-columns: 1fr 1fr 1fr 1fr; padding: 6px 10px; font-size: 13px; align-items: center; }
 .row:nth-child(even) { background: rgba(255,255,255,0.02); }
 
 .bid { color: var(--bid); }
@@ -790,6 +1203,10 @@ pre.json {
 .depth-fill.bid { background: var(--bid); right: 0; left: auto; }
 .depth-fill.ask { background: var(--ask); }
 .depth-text { position: relative; z-index: 1; }
+
+/* Exchanges icons */
+.exchanges { display: inline-flex; align-items: center; gap: 6px; min-height: 18px; }
+.exch-icon { width: 16px; height: 16px; display: inline-block; object-fit: contain; }
 
 footer.note { padding: 10px 16px; color: var(--muted); border-top: 1px solid var(--divider); font-size: 12px; }
 a { color: var(--accent); text-decoration: none; }
