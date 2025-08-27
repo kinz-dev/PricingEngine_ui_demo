@@ -699,6 +699,29 @@ const asksSorted = computed(() => {
 const bidMax = computed(() => bidsSorted.value.reduce((m, r) => Math.max(m, r.cum), 0) || 1);
 const askMax = computed(() => asksSorted.value.reduce((m, r) => Math.max(m, r.cum), 0) || 1);
 
+// Per-level spread aligned by index between bids and asks
+const spreadRows = computed(() => {
+  const bids = bidsSorted.value;
+  const asks = asksSorted.value;
+  const len = Math.max(bids.length, asks.length);
+  const out = [];
+  for (let i = 0; i < len; i++) {
+    const bid = bids[i]?.price;
+    const ask = asks[i]?.price;
+    if (Number.isFinite(bid) && Number.isFinite(ask)) {
+      const diff = ask - bid;
+      const mid = (ask + bid) / 2;
+      const bps = (Number.isFinite(mid) && mid !== 0) ? (diff / mid) * 10000 : NaN;
+      const cls = diff > 0 ? 'pos' : diff < 0 ? 'neg' : 'zero';
+      const bpsStr = Number.isFinite(bps) ? bps.toFixed(1) : '—';
+      out.push({ text: `${diff.toFixed(2)}`, cls });
+    } else {
+      out.push({ text: '—', cls: 'zero' });
+    }
+  }
+  return out;
+});
+
 // Exchange icons mapping
 const EX_ICON_BINANCE = 'https://image.immix.xyz/exchanges/binance_spot-colour-dark.svg';
 const EX_ICON_OKX = 'https://image.immix.xyz/exchanges/okx-colour-light.svg';
@@ -990,7 +1013,7 @@ onBeforeUnmount(() => {
   </aside>
   <header>
     <div>
-      <div class="title">{{ activePage === 'pricing' ? 'Pricing Engine' : 'Execution Service' }}</div>
+      <div class="title">{{ activePage === 'pricing' ? 'IMMIX - Pricing Engine' : 'IMMIX - Execution Service' }}</div>
       <div class="subtitle" v-if="activePage === 'pricing'">Custom Order Book (Bids in green, Asks in red)</div>
       <div class="subtitle" v-else>Place orders via WebSocket</div>
     </div>
@@ -1102,6 +1125,18 @@ Ensure the file exists and is readable.
                   <span class="depth-text">{{ row.qty.toFixed(4) }}</span>
                 </div>
               </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="table mid">
+          <div class="table-title">Spread</div>
+          <div class="table-header">
+            <div>Spread (BPS)</div>
+          </div>
+          <div class="rows">
+            <div v-for="(s, i) in spreadRows" :key="'spr-'+i" class="row">
+              <div class="spread" :class="s.cls">{{ s.text }}</div>
             </div>
           </div>
         </div>
@@ -1702,7 +1737,7 @@ pre.json {
 
 .orderbook {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: 1fr 140px 1fr;
   gap: 10px;
   height: 100%;
 }
@@ -1869,7 +1904,7 @@ body {
   margin-left: 0 !important;
 }
 
-// END TODO
+/* END TODO */
 
 
 /* JSON inline editor */
@@ -1877,14 +1912,16 @@ body {
   width: 100%;
   min-height: 220px;
   resize: vertical;
+  display: block;
   background: #0c0f1a;
   color: var(--text);
   border: 1px solid #223;
   border-radius: 8px;
-  padding: 10px;
+  padding: 12px;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
   font-size: 12px;
   line-height: 1.4;
+  color-scheme: dark;
 }
 
 .editor-actions {
@@ -1928,4 +1965,12 @@ body {
 .status.ok {
   color: var(--bid);
 }
+
+/* Middle spread table layout */
+.table.mid .table-header { grid-template-columns: 1fr; text-align: center; }
+.table.mid .table-title { text-align: center; }
+.table.mid .row { grid-template-columns: 1fr; justify-items: center; }
+
 </style>
+
+
