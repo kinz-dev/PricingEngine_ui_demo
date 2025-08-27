@@ -1133,14 +1133,16 @@ Ensure the file exists and is readable.
     <!-- Right: Order Book -->
     <section class="panel">
       <div class="panel-header">
-        <div class="panel-title">Aggregated Order Book</div>
-        <div class="subtitle">Updates: {{ tick }}</div>
-      </div>
-      <div class="panel-subheader asset-pair">
-        <img src="https://image.immix.xyz/assets/btc.svg?fallback=true" alt="BTC" class="asset-icon" />
-        <span>BTC</span>
-        <img src="https://image.immix.xyz/assets/usdt.svg?fallback=true" alt="USDT" class="asset-icon" />
-        <span>USDT</span>
+        <div class="panel-header-top">
+          <div class="panel-title">Aggregated Order Book</div>
+          <div class="subtitle">Updates: {{ tick }}</div>
+        </div>
+        <div class="asset-pair">
+          <img src="https://image.immix.xyz/assets/btc.svg?fallback=true" alt="BTC" class="asset-icon" />
+          <span>BTC</span>
+          <img src="https://image.immix.xyz/assets/usdt.svg?fallback=true" alt="USDT" class="asset-icon" />
+          <span>USDT</span>
+        </div>
       </div>
       <div class="panel-body orderbook">
         <div class="table combined">
@@ -1620,10 +1622,16 @@ body {
 
 .panel-header {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
+  flex-direction: column;
+  gap: 6px;
   padding: 12px 14px;
   border-bottom: 1px solid var(--divider);
+}
+
+.panel-header-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
 }
 
 .panel-title {
@@ -2042,12 +2050,8 @@ body {
 .table.mid .table-title { text-align: center; }
 .table.mid .row { grid-template-columns: 1fr; justify-items: center; }
 
-/* Asset pair subheader */
-.panel-subheader {
-  padding: 6px 14px;
-  border-bottom: 1px solid var(--divider);
-}
-.panel-subheader.asset-pair {
+/* Asset pair inside combined header */
+.panel-header .asset-pair {
   display: flex;
   align-items: center;
   justify-content: center;
