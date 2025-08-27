@@ -715,13 +715,57 @@ const spreadRows = computed(() => {
       const cls = diff > 0 ? 'pos' : diff < 0 ? 'neg' : 'zero';
       const bpsStr = Number.isFinite(bps) ? bps.toFixed(1) : '—';
       // out.push({ text: `${diff.toFixed(2)} (${bpsStr})`, cls });
-      out.push({ text: `${bpsStr}`, cls });
+      out.push({ text: `${bpsStr}`, cls, bps: Number.isFinite(bps) ? Math.abs(bps) : NaN });
     } else {
-      out.push({ text: '—', cls: 'zero' });
+      out.push({ text: '—', cls: 'zero', bps: NaN });
     }
   }
   return out;
 });
+
+// Max absolute per-level spread (bps) across visible rows for normalization
+const maxSpreadBps = computed(() => {
+  try {
+    let max = 0;
+    for (const r of spreadRows.value) {
+      const v = r?.bps;
+      if (Number.isFinite(v) && v >= 0) {
+        if (v > max) max = v;
+      }
+    }
+    return max;
+  } catch (e) {
+    return 0;
+  }
+});
+
+// Style for spread cell: smaller spread -> brighter blue, larger spread -> darker blue
+function spreadCellStyle(row) {
+  try {
+    const v = row?.bps;
+    if (!Number.isFinite(v) || v < 0) {
+      return {};
+    }
+    const max = maxSpreadBps.value || 1;
+    const t = Math.max(0, Math.min(1, v / max));
+    // Lightness range (even darker): 48% (bright) for smallest, down to 18% (dark) for largest
+    const minL = 18;
+    const maxL = 48;
+    const L1 = maxL - t * (maxL - minL);
+    const L2 = Math.max(minL, L1 - 10);
+    const color1 = `hsl(210 100% ${L1}%)`;
+    const color2 = `hsl(210 100% ${L2}%)`;
+    const textColor = L1 > 44 ? '#0b1b3a' : '#ffffff';
+    return {
+      background: `linear-gradient(90deg, ${color1} 0%, ${color2} 100%)`,
+      color: textColor,
+      borderRadius: '6px',
+      padding: '2px 6px',
+    };
+  } catch (e) {
+    return {};
+  }
+}
 
 // Exchange icons mapping
 const EX_ICON_BINANCE = 'https://image.immix.xyz/exchanges/binance_spot-colour-dark.svg';
@@ -1089,8 +1133,14 @@ Ensure the file exists and is readable.
     <!-- Right: Order Book -->
     <section class="panel">
       <div class="panel-header">
-        <div class="panel-title">Order Book</div>
+        <div class="panel-title">Aggregated Order Book</div>
         <div class="subtitle">Updates: {{ tick }}</div>
+      </div>
+      <div class="panel-subheader asset-pair">
+        <img src="https://image.immix.xyz/assets/btc.svg?fallback=true" alt="BTC" class="asset-icon" />
+        <span>BTC</span>
+        <img src="https://image.immix.xyz/assets/usdt.svg?fallback=true" alt="USDT" class="asset-icon" />
+        <span>USDT</span>
       </div>
       <div class="panel-body orderbook">
         <div class="table combined">
@@ -1100,15 +1150,15 @@ Ensure the file exists and is readable.
             <div class="group asks" style="grid-column: 6 / span 4">Asks</div>
           </div>
           <div class="table-header cols">
-            <div>Bid Price</div>
-            <div>Bid Total</div>
-            <div>Bid Exchanges</div>
-            <div>Bid Qty</div>
-            <div>Spread</div>
-            <div>Ask Qty</div>
-            <div>Ask Exchanges</div>
-            <div>Ask Total</div>
-            <div>Ask Price</div>
+            <div>Price</div>
+            <div>Total Qty</div>
+            <div>Exchanges</div>
+            <div>Qty</div>
+            <div>Spread (BPS)</div>
+            <div>Qty</div>
+            <div>Exchanges</div>
+            <div>Total Qty</div>
+            <div>Price</div>
           </div>
           <div class="rows">
             <div v-for="i in Math.max(bidsSorted.length, asksSorted.length)" :key="'row-'+i" class="row">
@@ -1141,7 +1191,7 @@ Ensure the file exists and is readable.
                 <div></div><div></div><div></div><div></div>
               </template>
 
-              <div class="spread" :class="spreadRows[i-1]?.cls">{{ spreadRows[i-1]?.text ?? '—' }}</div>
+              <div class="spread" :class="spreadRows[i-1]?.cls" :style="spreadCellStyle(spreadRows[i-1])">{{ spreadRows[i-1]?.text ?? '—' }}</div>
 
               <template v-if="asksSorted[i-1]">
                 <div>
@@ -1175,10 +1225,12 @@ Ensure the file exists and is readable.
           </div>
         </div>
       </div>
+      <!--
       <footer class="note">
         <div>Pricing engine order book</div>
         <div>Spread: <span class="spread" :class="spreadSignClass">{{ spreadBpsDisplay }}</span> bps</div>
       </footer>
+      -->
     </section>
   </div>
 
@@ -1989,6 +2041,26 @@ body {
 .table.mid .table-header { grid-template-columns: 1fr; text-align: center; }
 .table.mid .table-title { text-align: center; }
 .table.mid .row { grid-template-columns: 1fr; justify-items: center; }
+
+/* Asset pair subheader */
+.panel-subheader {
+  padding: 6px 14px;
+  border-bottom: 1px solid var(--divider);
+}
+.panel-subheader.asset-pair {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  font-size: 14px;
+  font-weight: 600;
+}
+.asset-icon {
+  width: 18px;
+  height: 18px;
+  display: inline-block;
+  object-fit: contain;
+}
 
 </style>
 
