@@ -714,7 +714,8 @@ const spreadRows = computed(() => {
       const bps = (Number.isFinite(mid) && mid !== 0) ? (diff / mid) * 10000 : NaN;
       const cls = diff > 0 ? 'pos' : diff < 0 ? 'neg' : 'zero';
       const bpsStr = Number.isFinite(bps) ? bps.toFixed(1) : '—';
-      out.push({ text: `${diff.toFixed(2)}`, cls });
+      // out.push({ text: `${diff.toFixed(2)} (${bpsStr})`, cls });
+      out.push({ text: `${bpsStr}`, cls });
     } else {
       out.push({ text: '—', cls: 'zero' });
     }
@@ -1092,88 +1093,84 @@ Ensure the file exists and is readable.
         <div class="subtitle">Updates: {{ tick }}</div>
       </div>
       <div class="panel-body orderbook">
-        <div class="table">
-          <div class="table-title bid">Bids</div>
-          <div class="table-header">
-            <div>Price</div>
-            <div>Total</div>
-            <div>Exchanges</div>
-            <div>Quantity</div>
+        <div class="table combined">
+          <div class="table-header top">
+            <div class="group bids" style="grid-column: 1 / span 4">Bids</div>
+            <div class="group spread" style="grid-column: 5 / span 1">Spread</div>
+            <div class="group asks" style="grid-column: 6 / span 4">Asks</div>
+          </div>
+          <div class="table-header cols">
+            <div>Bid Price</div>
+            <div>Bid Total</div>
+            <div>Bid Exchanges</div>
+            <div>Bid Qty</div>
+            <div>Spread</div>
+            <div>Ask Qty</div>
+            <div>Ask Exchanges</div>
+            <div>Ask Total</div>
+            <div>Ask Price</div>
           </div>
           <div class="rows">
-            <div v-for="(row, i) in bidsSorted" :key="'bid-'+i" class="row">
-              <div class="bid">{{ row.price.toFixed(2) }}</div>
-              <div>{{ row.cum.toFixed(4) }}</div>
-              <div class="exchanges">
-                <template v-if="mapExchangesToIcons(row.exchanges).length">
-                  <img
-                      v-for="(icon, idx) in mapExchangesToIcons(row.exchanges)"
-                      :key="icon.url + '-' + idx"
-                      :src="icon.url"
-                      :alt="icon.alt"
-                      :title="icon.title"
-                      class="exch-icon"
-                  />
-                </template>
-                <template v-else>
-                  {{ row.exchanges }}
-                </template>
-              </div>
-              <div>
-                <div class="depth-bar">
-                  <div class="depth-fill bid" :style="{ width: (row.cum/bidMax*100).toFixed(1)+'%' }"></div>
-                  <span class="depth-text">{{ row.qty.toFixed(4) }}</span>
+            <div v-for="i in Math.max(bidsSorted.length, asksSorted.length)" :key="'row-'+i" class="row">
+              <template v-if="bidsSorted[i-1]">
+                <div class="bid">{{ bidsSorted[i-1].price.toFixed(2) }}</div>
+                <div>{{ bidsSorted[i-1].cum.toFixed(4) }}</div>
+                <div class="exchanges">
+                  <template v-if="mapExchangesToIcons(bidsSorted[i-1].exchanges).length">
+                    <img
+                        v-for="(icon, idx) in mapExchangesToIcons(bidsSorted[i-1].exchanges)"
+                        :key="'bex-'+i+'-'+idx"
+                        :src="icon.url"
+                        :alt="icon.alt"
+                        :title="icon.title"
+                        class="exch-icon"
+                    />
+                  </template>
+                  <template v-else>
+                    {{ bidsSorted[i-1].exchanges }}
+                  </template>
                 </div>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <div class="table mid">
-          <div class="table-title">Spread</div>
-          <div class="table-header">
-            <div>Spread (BPS)</div>
-          </div>
-          <div class="rows">
-            <div v-for="(s, i) in spreadRows" :key="'spr-'+i" class="row">
-              <div class="spread" :class="s.cls">{{ s.text }}</div>
-            </div>
-          </div>
-        </div>
-
-        <div class="table">
-          <div class="table-title ask">Asks</div>
-          <div class="table-header">
-            <div>Quantity</div>
-            <div>Exchanges</div>
-            <div>Total</div>
-            <div>Price</div>
-          </div>
-          <div class="rows">
-            <div v-for="(row, i) in asksSorted" :key="'ask-'+i" class="row">
-              <div>
-                <div class="depth-bar">
-                  <div class="depth-fill ask" :style="{ width: (row.cum/askMax*100).toFixed(1)+'%' }"></div>
-                  <span class="depth-text">{{ row.qty.toFixed(4) }}</span>
+                <div>
+                  <div class="depth-bar">
+                    <div class="depth-fill bid" :style="{ width: (bidsSorted[i-1].cum/bidMax*100).toFixed(1)+'%' }"></div>
+                    <span class="depth-text">{{ bidsSorted[i-1].qty.toFixed(4) }}</span>
+                  </div>
                 </div>
-              </div>
-              <div class="exchanges">
-                <template v-if="mapExchangesToIcons(row.exchanges).length">
-                  <img
-                      v-for="(icon, idx) in mapExchangesToIcons(row.exchanges)"
-                      :key="icon.url + '-' + idx"
-                      :src="icon.url"
-                      :alt="icon.alt"
-                      :title="icon.title"
-                      class="exch-icon"
-                  />
-                </template>
-                <template v-else>
-                  {{ row.exchanges }}
-                </template>
-              </div>
-              <div>{{ row.cum.toFixed(4) }}</div>
-              <div class="ask">{{ row.price.toFixed(2) }}</div>
+              </template>
+              <template v-else>
+                <div></div><div></div><div></div><div></div>
+              </template>
+
+              <div class="spread" :class="spreadRows[i-1]?.cls">{{ spreadRows[i-1]?.text ?? '—' }}</div>
+
+              <template v-if="asksSorted[i-1]">
+                <div>
+                  <div class="depth-bar">
+                    <div class="depth-fill ask" :style="{ width: (asksSorted[i-1].cum/askMax*100).toFixed(1)+'%' }"></div>
+                    <span class="depth-text">{{ asksSorted[i-1].qty.toFixed(4) }}</span>
+                  </div>
+                </div>
+                <div class="exchanges">
+                  <template v-if="mapExchangesToIcons(asksSorted[i-1].exchanges).length">
+                    <img
+                        v-for="(icon, idx) in mapExchangesToIcons(asksSorted[i-1].exchanges)"
+                        :key="'aex-'+i+'-'+idx"
+                        :src="icon.url"
+                        :alt="icon.alt"
+                        :title="icon.title"
+                        class="exch-icon"
+                    />
+                  </template>
+                  <template v-else>
+                    {{ asksSorted[i-1].exchanges }}
+                  </template>
+                </div>
+                <div>{{ asksSorted[i-1].cum.toFixed(4) }}</div>
+                <div class="ask">{{ asksSorted[i-1].price.toFixed(2) }}</div>
+              </template>
+              <template v-else>
+                <div></div><div></div><div></div><div></div>
+              </template>
             </div>
           </div>
         </div>
@@ -1737,7 +1734,7 @@ pre.json {
 
 .orderbook {
   display: grid;
-  grid-template-columns: 1fr 140px 1fr;
+  grid-template-columns: 1fr;
   gap: 10px;
   height: 100%;
 }
@@ -1761,6 +1758,24 @@ pre.json {
   color: var(--muted);
 }
 
+.table.combined .table-header.top {
+  grid-template-columns: repeat(9, 1fr);
+  text-align: center;
+  font-weight: 600;
+}
+
+/* Order Book group headers styling */
+.table.combined .table-header.top .group {
+  font-size: 15px; /* slightly larger than row font (13px) and header cols (12px) */
+}
+.table.combined .table-header.top .group.bids { color: var(--bid); }
+.table.combined .table-header.top .group.asks { color: var(--ask); }
+.table.combined .table-header.top .group.spread { color: var(--accent); }
+
+.table.combined .table-header.cols {
+  grid-template-columns: repeat(9, 1fr);
+}
+
 .table-title {
   font-weight: 600;
   padding: 8px 10px;
@@ -1778,6 +1793,10 @@ pre.json {
   padding: 6px 10px;
   font-size: 13px;
   align-items: center;
+}
+
+.table.combined .row {
+  grid-template-columns: repeat(9, 1fr);
 }
 
 .row:nth-child(even) {
