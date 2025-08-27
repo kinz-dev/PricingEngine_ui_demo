@@ -724,6 +724,12 @@ const spreadRows = computed(() => {
 });
 
 // Max absolute per-level spread (bps) across visible rows for normalization
+const bidsBucketed = computed(() => bidsSorted.value.slice(0, 5));
+const asksBucketed = computed(() => asksSorted.value.slice(0, 5));
+const bidBucketMax = computed(() => bidsBucketed.value.reduce((m, r) => Math.max(m, r.cum), 0) || 1);
+const askBucketMax = computed(() => asksBucketed.value.reduce((m, r) => Math.max(m, r.cum), 0) || 1);
+const bucketSpreadRows = computed(() => spreadRows.value.slice(0, 5));
+
 const maxSpreadBps = computed(() => {
   try {
     let max = 0;
@@ -1134,18 +1140,69 @@ Ensure the file exists and is readable.
     <section class="panel">
       <div class="panel-header">
         <div class="panel-header-top">
-          <div class="panel-title">Aggregated Order Book</div>
-          <div class="subtitle">Updates: {{ tick }}</div>
+        <div class="subtitle">Updates: {{ tick }}</div>
         </div>
         <div class="asset-pair">
           <img src="https://image.immix.xyz/assets/btc.svg?fallback=true" alt="BTC" class="asset-icon" />
           <span>BTC</span>
           <img src="https://image.immix.xyz/assets/usdt.svg?fallback=true" alt="USDT" class="asset-icon" />
           <span>USDT</span>
+
         </div>
       </div>
       <div class="panel-body orderbook">
+        <div class="table combined7">
+          <div class="table-title">Volume Bucketed</div>
+          <div class="table-header top">
+            <div class="group bids" style="grid-column: 1 / span 3">Bids</div>
+            <div class="group spread" style="grid-column: 4 / span 1">Spread</div>
+            <div class="group asks" style="grid-column: 5 / span 3">Asks</div>
+          </div>
+          <div class="table-header cols">
+            <div>Price</div>
+            <div>Total Qty</div>
+            <div>Qty</div>
+            <div>Spread (BPS)</div>
+            <div>Qty</div>
+            <div>Total Qty</div>
+            <div>Price</div>
+          </div>
+          <div class="rows">
+            <div v-for="i in Math.max(bidsBucketed.length, asksBucketed.length)" :key="'vbrow-'+i" class="row">
+              <template v-if="bidsBucketed[i-1]">
+                <div class="bid">{{ bidsBucketed[i-1].price.toFixed(2) }}</div>
+                <div>{{ bidsBucketed[i-1].cum.toFixed(4) }}</div>
+                <div>
+                  <div class="depth-bar">
+                    <div class="depth-fill bid" :style="{ width: (bidsBucketed[i-1].cum/bidBucketMax*100).toFixed(1)+'%' }"></div>
+                    <span class="depth-text">{{ bidsBucketed[i-1].qty.toFixed(4) }}</span>
+                  </div>
+                </div>
+              </template>
+              <template v-else>
+                <div></div><div></div><div></div>
+              </template>
+
+              <div class="spread" :class="bucketSpreadRows[i-1]?.cls" :style="spreadCellStyle(bucketSpreadRows[i-1])">{{ bucketSpreadRows[i-1]?.text ?? '—' }}</div>
+
+              <template v-if="asksBucketed[i-1]">
+                <div>
+                  <div class="depth-bar">
+                    <div class="depth-fill ask" :style="{ width: (asksBucketed[i-1].cum/askBucketMax*100).toFixed(1)+'%' }"></div>
+                    <span class="depth-text">{{ asksBucketed[i-1].qty.toFixed(4) }}</span>
+                  </div>
+                </div>
+                <div>{{ asksBucketed[i-1].cum.toFixed(4) }}</div>
+                <div class="ask">{{ asksBucketed[i-1].price.toFixed(2) }}</div>
+              </template>
+              <template v-else>
+                <div></div><div></div><div></div>
+              </template>
+            </div>
+          </div>
+        </div>
         <div class="table combined">
+          <div class="table-title">Aggregated Order Book</div>
           <div class="table-header top">
             <div class="group bids" style="grid-column: 1 / span 4">Bids</div>
             <div class="group spread" style="grid-column: 5 / span 1">Spread</div>
@@ -1859,6 +1916,19 @@ pre.json {
   grid-template-columns: repeat(9, 1fr);
 }
 
+/* Volume Bucketed (7-column) layout */
+.table.combined7 .table-header.top {
+  grid-template-columns: repeat(7, 1fr);
+  text-align: center;
+  font-weight: 600;
+}
+.table.combined7 .table-header.top .group { font-size: 15px; }
+.table.combined7 .table-header.top .group.bids { color: var(--bid); }
+.table.combined7 .table-header.top .group.asks { color: var(--ask); }
+.table.combined7 .table-header.top .group.spread { color: var(--accent); }
+.table.combined7 .table-header.cols { grid-template-columns: repeat(7, 1fr); }
+.table.combined7 .row { grid-template-columns: repeat(7, 1fr); }
+
 .row:nth-child(even) {
   background: rgba(255, 255, 255, 0.02);
 }
@@ -2067,5 +2137,3 @@ body {
 }
 
 </style>
-
-
