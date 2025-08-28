@@ -42,4 +42,3 @@ If you later want a production-grade grid/table:
 - AG Grid Community (Vue wrapper) – feature-rich and fast.
 - TanStack Table (Vue Table) – headless, flexible; style it yourself.
 
-If you want, I can integrate either of these for the order book view.
