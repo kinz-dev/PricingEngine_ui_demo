@@ -45,6 +45,8 @@ function perturbBook(book, rand) {
 }
 
 const tick = ref(0);
+const obTick = ref(0);
+const vbTick = ref(0);
 const timeStr = ref('');
 
 // Simple in-app navigation between pages
@@ -64,9 +66,8 @@ const config = reactive({
   },
 });
 
-// const wsUrl = ref('ws://localhost:48000/api/v7');
-const wsUrl = ref('wss://md-ws-gateway.uat.immix.xyz/');
-
+const wsUrl = ref('ws://localhost:48000/api/v7');
+// const wsUrl = ref('wss://md-ws-gateway.uat.immix.xyz/');
 
 // WebSocket connection state
 const ws = ref(null);
@@ -87,7 +88,12 @@ const wsStatusDisplay = computed(() => {
 // subscription payload and helpers
 const SUBSCRIBE_PAYLOAD = {
   op: 'subscribe',
-  params: {topics: ['pe_orderbook.9999.BTCUSDT-PE-OB.100ms']},
+  params: {
+    topics: [
+      'pe_orderbook.9999.BTCUSDT-PE-OB.100ms',
+      'vb_orderbook.9999.BTCUSDT-OB.100ms',
+    ]
+  },
   reqId: 'sub-1',
 };
 
@@ -134,9 +140,8 @@ function connectWs() {
   try {
     wsStatus.value = 'connecting';
 
-    // TODO hardcode
-    // const socket = new WebSocket(wsUrl.value);
-    const socket = new WebSocket('ws://localhost:48000/api/v7');
+    // Use configured URL
+    const socket = new WebSocket(wsUrl.value);
     ws.value = socket;
 
     socket.onopen = () => {
@@ -156,9 +161,15 @@ function connectWs() {
     socket.onmessage = (event) => {
       try {
         const msg = JSON.parse(event.data);
-        if (msg && (msg.event === 'pe_orderbook' || (msg.topic && String(msg.topic).startsWith('pe_orderbook')))) {
-          if (msg.data) {
-            applyOrderBookMessage(msg.data);
+        if (msg) {
+          if (msg.event === 'pe_orderbook' || (msg.topic && String(msg.topic).startsWith('pe_orderbook'))) {
+            if (msg.data) {
+              applyOrderBookMessage(msg.data);
+            }
+          } else if (msg.event === 'vb_orderbook' || (msg.topic && String(msg.topic).startsWith('vb_orderbook'))) {
+            if (msg.data) {
+              applyVbMessage(msg);
+            }
           }
         }
       } catch (e) {
@@ -661,7 +672,7 @@ function applyOrderBookMessage(data) {
   if (Array.isArray(data.asks)) {
     applyLevels('asks', data.asks);
   }
-  tick.value++;
+  obTick.value++;
 }
 
 const bidsSorted = computed(() => {
@@ -715,9 +726,9 @@ const spreadRows = computed(() => {
       const cls = diff > 0 ? 'pos' : diff < 0 ? 'neg' : 'zero';
       const bpsStr = Number.isFinite(bps) ? bps.toFixed(1) : '—';
       // out.push({ text: `${diff.toFixed(2)} (${bpsStr})`, cls });
-      out.push({ text: `${bpsStr}`, cls, bps: Number.isFinite(bps) ? Math.abs(bps) : NaN });
+      out.push({text: `${bpsStr}`, cls, bps: Number.isFinite(bps) ? Math.abs(bps) : NaN});
     } else {
-      out.push({ text: '—', cls: 'zero', bps: NaN });
+      out.push({text: '—', cls: 'zero', bps: NaN});
     }
   }
   return out;
@@ -736,7 +747,9 @@ const maxSpreadBps = computed(() => {
     for (const r of spreadRows.value) {
       const v = r?.bps;
       if (Number.isFinite(v) && v >= 0) {
-        if (v > max) max = v;
+        if (v > max) {
+          max = v;
+        }
       }
     }
     return max;
@@ -771,6 +784,116 @@ function spreadCellStyle(row) {
   } catch (e) {
     return {};
   }
+}
+
+// ===== Volume Bucketed Order Book (VB) state and helpers =====
+const vbBuckets = ref([]);
+const vbMeta = reactive({orderBookName: '', pricingModel: '', ts: '', seqId: '', topic: ''});
+
+function applyVbMessage(msg) {
+  try {
+    const data = msg?.data || {};
+    vbMeta.orderBookName = String(data.orderBookName || '');
+    vbMeta.pricingModel = String(data.pricingModel || '');
+    vbMeta.ts = String(data.ts || '');
+    vbMeta.seqId = String(data.seqId || '');
+    vbMeta.topic = String(msg?.topic || '');
+    if (Array.isArray(data.buckets)) {
+      vbBuckets.value = data.buckets.slice();
+    } else {
+      vbBuckets.value = [];
+    }
+    vbTick.value++;
+  } catch (e) {
+    // ignore
+  }
+}
+
+const vbRows = computed(() => Array.isArray(vbBuckets.value) ? vbBuckets.value : []);
+
+function numOrNaN(v) {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : NaN;
+}
+
+const vbBidBucketMax = computed(() => {
+  let m = 0;
+  for (const b of vbRows.value) {
+    const v = numOrNaN(b?.bidCumSum);
+    if (Number.isFinite(v) && v > m) {
+      m = v;
+    }
+  }
+  return m || 1;
+});
+
+const vbAskBucketMax = computed(() => {
+  let m = 0;
+  for (const b of vbRows.value) {
+    const v = numOrNaN(b?.askCumSum);
+    if (Number.isFinite(v) && v > m) {
+      m = v;
+    }
+  }
+  return m || 1;
+});
+
+const vbBucketSpreadRows = computed(() => {
+  return vbRows.value.map(b => {
+    const s = b?.spreadBps;
+    const v = Number(s);
+    if (Number.isFinite(v)) {
+      const cls = v > 0 ? 'pos' : v < 0 ? 'neg' : 'zero';
+      return {text: v.toFixed(1), cls, bps: Math.abs(v)};
+    }
+    const txt = s != null ? String(s) : '—';
+    return {text: txt, cls: 'zero', bps: NaN};
+  });
+});
+
+const vbMaxSpreadBps = computed(() => {
+  let max = 0;
+  for (const r of vbBucketSpreadRows.value) {
+    const v = r?.bps;
+    if (Number.isFinite(v) && v >= 0 && v > max) {
+      max = v;
+    }
+  }
+  return max;
+});
+
+function vbSpreadCellStyle(row) {
+  try {
+    const v = row?.bps;
+    if (!Number.isFinite(v) || v < 0) {
+      return {};
+    }
+    const max = vbMaxSpreadBps.value || 1;
+    const t = Math.max(0, Math.min(1, v / max));
+    const minL = 18;
+    const maxL = 48;
+    const L1 = maxL - t * (maxL - minL);
+    const L2 = Math.max(minL, L1 - 10);
+    const color1 = `hsl(210 100% ${L1}%)`;
+    const color2 = `hsl(210 100% ${L2}%)`;
+    const textColor = L1 > 44 ? '#0b1b3a' : '#ffffff';
+    return {
+      background: `linear-gradient(90deg, ${color1} 0%, ${color2} 100%)`,
+      color: textColor,
+      borderRadius: '6px',
+      padding: '2px 6px',
+    };
+  } catch (e) {
+    return {};
+  }
+}
+
+function fmtNum(val, digits = 2) {
+  const n = Number(val);
+  if (Number.isFinite(n)) {
+    return n.toFixed(digits);
+  }
+  return val != null ? String(val) : '—';
 }
 
 // Exchange icons mapping
@@ -1139,70 +1262,54 @@ Ensure the file exists and is readable.
     <!-- Right: Order Book -->
     <section class="panel">
       <div class="panel-header">
-        <div class="panel-header-top">
-        <div class="subtitle">Updates: {{ tick }}</div>
-        </div>
+        <div class="panel-header-top"></div>
         <div class="asset-pair">
-          <img src="https://image.immix.xyz/assets/btc.svg?fallback=true" alt="BTC" class="asset-icon" />
+          <img src="https://image.immix.xyz/assets/btc.svg?fallback=true" alt="BTC" class="asset-icon"/>
           <span>BTC</span>
-          <img src="https://image.immix.xyz/assets/usdt.svg?fallback=true" alt="USDT" class="asset-icon" />
+          <img src="https://image.immix.xyz/assets/usdt.svg?fallback=true" alt="USDT" class="asset-icon"/>
           <span>USDT</span>
 
         </div>
       </div>
       <div class="panel-body orderbook">
-        <div class="table combined7">
-          <div class="table-title">Volume Bucketed</div>
+        <div class="table vb13">
+          <div class="table-title"><span>Volume Bucketed Order Book <span v-if="vbMeta.orderBookName">— {{ vbMeta.orderBookName }}</span> <span
+              v-if="vbMeta.pricingModel">({{ vbMeta.pricingModel }})</span></span><div class="subtitle tick">Updates: {{ vbTick }}</div></div>
           <div class="table-header top">
-            <div class="group bids" style="grid-column: 1 / span 3">Bids</div>
-            <div class="group spread" style="grid-column: 4 / span 1">Spread</div>
-            <div class="group asks" style="grid-column: 5 / span 3">Asks</div>
-          </div>
-          <div class="table-header cols">
-            <div>Price</div>
-            <div>Total Qty</div>
-            <div>Qty</div>
-            <div>Spread (BPS)</div>
-            <div>Qty</div>
-            <div>Total Qty</div>
-            <div>Price</div>
+            <div>bid size</div>
+            <div>bid cumulative sum</div>
+            <div>bid px</div>
+            <!--            <div>bid total amount</div>-->
+            <!--            <div>ask totol amount</div>-->
+            <!--            <div>rawBidPx</div>-->
+            <!--            <div>rawAskPx</div>-->
+            <div>bid margin bps</div>
+            <div>spreadBps</div>
+            <div>ask margin bps</div>
+            <div>ask px</div>
+            <div>ask cumulative sum</div>
+            <div>ask size</div>
           </div>
           <div class="rows">
-            <div v-for="i in Math.max(bidsBucketed.length, asksBucketed.length)" :key="'vbrow-'+i" class="row">
-              <template v-if="bidsBucketed[i-1]">
-                <div class="bid">{{ bidsBucketed[i-1].price.toFixed(2) }}</div>
-                <div>{{ bidsBucketed[i-1].cum.toFixed(4) }}</div>
-                <div>
-                  <div class="depth-bar">
-                    <div class="depth-fill bid" :style="{ width: (bidsBucketed[i-1].cum/bidBucketMax*100).toFixed(1)+'%' }"></div>
-                    <span class="depth-text">{{ bidsBucketed[i-1].qty.toFixed(4) }}</span>
-                  </div>
-                </div>
-              </template>
-              <template v-else>
-                <div></div><div></div><div></div>
-              </template>
-
-              <div class="spread" :class="bucketSpreadRows[i-1]?.cls" :style="spreadCellStyle(bucketSpreadRows[i-1])">{{ bucketSpreadRows[i-1]?.text ?? '—' }}</div>
-
-              <template v-if="asksBucketed[i-1]">
-                <div>
-                  <div class="depth-bar">
-                    <div class="depth-fill ask" :style="{ width: (asksBucketed[i-1].cum/askBucketMax*100).toFixed(1)+'%' }"></div>
-                    <span class="depth-text">{{ asksBucketed[i-1].qty.toFixed(4) }}</span>
-                  </div>
-                </div>
-                <div>{{ asksBucketed[i-1].cum.toFixed(4) }}</div>
-                <div class="ask">{{ asksBucketed[i-1].price.toFixed(2) }}</div>
-              </template>
-              <template v-else>
-                <div></div><div></div><div></div>
-              </template>
+            <div v-for="(b, i) in vbRows" :key="'vbb-'+i" class="row">
+              <div class="bid">{{ fmtNum(b?.bidSz, 2) }}</div>
+              <div>{{ fmtNum(b?.bidCumSum, 2) }}</div>
+              <!--              <div>{{ fmtNum(b?.totalBidAmt, 2) }}</div>-->
+              <!--              <div>{{ fmtNum(b?.totalAskAmt, 2) }}</div>-->
+              <!--              <div class="bid">{{ fmtNum(b?.rawBidPx, 2) }}</div>-->
+              <!--              <div class="ask">{{ fmtNum(b?.rawAskPx, 2) }}</div>-->
+              <div class="bid">{{ fmtNum(b?.adjBidPx, 2) }}</div>
+              <div class="bid">{{ fmtNum(b?.bidMarginBps, 1) }}</div>
+              <div class="spread" :style="vbSpreadCellStyle(vbBucketSpreadRows[i])">{{ vbBucketSpreadRows[i]?.text ?? '—' }}</div>
+              <div class="ask">{{ fmtNum(b?.askMarginBps, 1) }}</div>
+              <div class="ask">{{ fmtNum(b?.adjAskPx, 2) }}</div>
+              <div>{{ fmtNum(b?.askCumSum, 2) }}</div>
+              <div class="ask">{{ fmtNum(b?.askSz, 2) }}</div>
             </div>
           </div>
         </div>
         <div class="table combined">
-          <div class="table-title">Aggregated Order Book</div>
+          <div class="table-title"><span>Aggregated Order Book</span><div class="subtitle tick">Updates: {{ obTick }}</div></div>
           <div class="table-header top">
             <div class="group bids" style="grid-column: 1 / span 4">Bids</div>
             <div class="group spread" style="grid-column: 5 / span 1">Spread</div>
@@ -1222,8 +1329,8 @@ Ensure the file exists and is readable.
           <div class="rows">
             <div v-for="i in Math.max(bidsSorted.length, asksSorted.length)" :key="'row-'+i" class="row">
               <template v-if="bidsSorted[i-1]">
-                <div class="bid">{{ bidsSorted[i-1].price.toFixed(2) }}</div>
-                <div>{{ bidsSorted[i-1].cum.toFixed(4) }}</div>
+                <div class="bid">{{ bidsSorted[i - 1].price.toFixed(2) }}</div>
+                <div>{{ bidsSorted[i - 1].cum.toFixed(4) }}</div>
                 <div class="exchanges">
                   <template v-if="mapExchangesToIcons(bidsSorted[i-1].exchanges).length">
                     <img
@@ -1236,27 +1343,30 @@ Ensure the file exists and is readable.
                     />
                   </template>
                   <template v-else>
-                    {{ bidsSorted[i-1].exchanges }}
+                    {{ bidsSorted[i - 1].exchanges }}
                   </template>
                 </div>
                 <div>
                   <div class="depth-bar">
                     <div class="depth-fill bid" :style="{ width: (bidsSorted[i-1].cum/bidMax*100).toFixed(1)+'%' }"></div>
-                    <span class="depth-text">{{ bidsSorted[i-1].qty.toFixed(4) }}</span>
+                    <span class="depth-text">{{ bidsSorted[i - 1].qty.toFixed(4) }}</span>
                   </div>
                 </div>
               </template>
               <template v-else>
-                <div></div><div></div><div></div><div></div>
+                <div></div>
+                <div></div>
+                <div></div>
+                <div></div>
               </template>
 
-              <div class="spread" :class="spreadRows[i-1]?.cls" :style="spreadCellStyle(spreadRows[i-1])">{{ spreadRows[i-1]?.text ?? '—' }}</div>
+              <div class="spread" :class="spreadRows[i-1]?.cls" :style="spreadCellStyle(spreadRows[i-1])">{{ spreadRows[i - 1]?.text ?? '—' }}</div>
 
               <template v-if="asksSorted[i-1]">
                 <div>
                   <div class="depth-bar">
                     <div class="depth-fill ask" :style="{ width: (asksSorted[i-1].cum/askMax*100).toFixed(1)+'%' }"></div>
-                    <span class="depth-text">{{ asksSorted[i-1].qty.toFixed(4) }}</span>
+                    <span class="depth-text">{{ asksSorted[i - 1].qty.toFixed(4) }}</span>
                   </div>
                 </div>
                 <div class="exchanges">
@@ -1271,14 +1381,17 @@ Ensure the file exists and is readable.
                     />
                   </template>
                   <template v-else>
-                    {{ asksSorted[i-1].exchanges }}
+                    {{ asksSorted[i - 1].exchanges }}
                   </template>
                 </div>
-                <div>{{ asksSorted[i-1].cum.toFixed(4) }}</div>
-                <div class="ask">{{ asksSorted[i-1].price.toFixed(2) }}</div>
+                <div>{{ asksSorted[i - 1].cum.toFixed(4) }}</div>
+                <div class="ask">{{ asksSorted[i - 1].price.toFixed(2) }}</div>
               </template>
               <template v-else>
-                <div></div><div></div><div></div><div></div>
+                <div></div>
+                <div></div>
+                <div></div>
+                <div></div>
               </template>
             </div>
           </div>
@@ -1885,9 +1998,18 @@ pre.json {
 .table.combined .table-header.top .group {
   font-size: 15px; /* slightly larger than row font (13px) and header cols (12px) */
 }
-.table.combined .table-header.top .group.bids { color: var(--bid); }
-.table.combined .table-header.top .group.asks { color: var(--ask); }
-.table.combined .table-header.top .group.spread { color: var(--accent); }
+
+.table.combined .table-header.top .group.bids {
+  color: var(--bid);
+}
+
+.table.combined .table-header.top .group.asks {
+  color: var(--ask);
+}
+
+.table.combined .table-header.top .group.spread {
+  color: var(--accent);
+}
 
 .table.combined .table-header.cols {
   grid-template-columns: repeat(9, 1fr);
@@ -1897,6 +2019,25 @@ pre.json {
   font-weight: 600;
   padding: 8px 10px;
   border-bottom: 1px solid var(--divider);
+}
+
+/* Center titles for Combined and VB13 tables, and place tick top-right in Aggregated table */
+.table.combined .table-title,
+.table.vb13 .table-title {
+  text-align: center;
+  position: relative;
+}
+
+.table.combined .table-title .tick {
+  position: absolute;
+  top: 8px;
+  right: 10px;
+}
+
+.table.vb13 .table-title .tick {
+  position: absolute;
+  top: 8px;
+  right: 10px;
 }
 
 .rows {
@@ -1922,12 +2063,41 @@ pre.json {
   text-align: center;
   font-weight: 600;
 }
-.table.combined7 .table-header.top .group { font-size: 15px; }
-.table.combined7 .table-header.top .group.bids { color: var(--bid); }
-.table.combined7 .table-header.top .group.asks { color: var(--ask); }
-.table.combined7 .table-header.top .group.spread { color: var(--accent); }
-.table.combined7 .table-header.cols { grid-template-columns: repeat(7, 1fr); }
-.table.combined7 .row { grid-template-columns: repeat(7, 1fr); }
+
+.table.combined7 .table-header.top .group {
+  font-size: 15px;
+}
+
+.table.combined7 .table-header.top .group.bids {
+  color: var(--bid);
+}
+
+.table.combined7 .table-header.top .group.asks {
+  color: var(--ask);
+}
+
+.table.combined7 .table-header.top .group.spread {
+  color: var(--accent);
+}
+
+.table.combined7 .table-header.cols {
+  grid-template-columns: repeat(7, 1fr);
+}
+
+.table.combined7 .row {
+  grid-template-columns: repeat(7, 1fr);
+}
+
+/* Volume Bucketed (13-column) layout for VB feed table */
+.table.vb13 .table-header.top {
+  grid-template-columns: repeat(9, 1fr);
+  text-align: center;
+  font-weight: 600;
+}
+
+.table.vb13 .row {
+  grid-template-columns: repeat(9, 1fr);
+}
 
 .row:nth-child(even) {
   background: rgba(255, 255, 255, 0.02);
@@ -2116,9 +2286,19 @@ body {
 }
 
 /* Middle spread table layout */
-.table.mid .table-header { grid-template-columns: 1fr; text-align: center; }
-.table.mid .table-title { text-align: center; }
-.table.mid .row { grid-template-columns: 1fr; justify-items: center; }
+.table.mid .table-header {
+  grid-template-columns: 1fr;
+  text-align: center;
+}
+
+.table.mid .table-title {
+  text-align: center;
+}
+
+.table.mid .row {
+  grid-template-columns: 1fr;
+  justify-items: center;
+}
 
 /* Asset pair inside combined header */
 .panel-header .asset-pair {
@@ -2129,6 +2309,7 @@ body {
   font-size: 14px;
   font-weight: 600;
 }
+
 .asset-icon {
   width: 18px;
   height: 18px;
